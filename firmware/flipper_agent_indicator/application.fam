@@ -1,0 +1,18 @@
+App(
+    appid="flipper_agent_indicator",
+    name="Agent Indicator",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="flipper_agent_indicator_app",
+    stack_size=2 * 1024,
+    fap_category="Tools",
+    fap_icon="assets/icon.png",
+    fap_icon_assets="assets",
+    sources=["*.c", "!test_*.c"],
+    requires=[
+        "gui",
+        "notification",
+    ],
+    fap_author="accessd",
+    fap_description="Displays AI-agent notifications (Claude/Codex/OpenCode) over BLE Serial with per-agent LED/vibra patterns.",
+    fap_version="0.1",
+)

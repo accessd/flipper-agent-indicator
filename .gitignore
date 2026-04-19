@@ -1,0 +1,9 @@
+.plea/
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.egg-info/
+.DS_Store
+current-context.md
