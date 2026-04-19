@@ -3,8 +3,9 @@
 #include "protocol.h"
 
 #include <furi/furi.h>
-#include <furi_hal_bt.h>
-#include <furi_hal_bt_serial.h>
+#include <bt/bt_service/bt.h>
+#include <services/serial_service.h>
+#include <profiles/serial_profile.h>
 
 #include <string.h>
 
@@ -15,6 +16,8 @@
 #define FAI_RX_BUF_CAP ((4 + FAI_MAX_TEXT_BYTES) * 2)
 
 typedef struct {
+    Bt* bt;
+    FuriHalBleProfileBase* profile;
     FuriMessageQueue* out_queue;
     uint8_t rx_buf[FAI_RX_BUF_CAP];
     size_t rx_len;
@@ -23,15 +26,10 @@ typedef struct {
 
 static FaiBleSerial g_ble = {0};
 
-// Attempt to parse as many complete frames as the buffer contains.
-// Drops the buffer on any parse failure so that desync cannot wedge us.
 static void fai_ble_try_parse(void) {
     while(g_ble.rx_len > 0) {
         FaiFrame frame;
-        const int rc = fai_protocol_decode(g_ble.rx_buf, g_ble.rx_len, &frame);
-        if(rc != 0) {
-            // Cannot tell if it's partial or garbage without a length prefix.
-            // If the buffer is full, drop it; otherwise wait for more bytes.
+        if(fai_protocol_decode(g_ble.rx_buf, g_ble.rx_len, &frame) != 0) {
             if(g_ble.rx_len >= FAI_RX_BUF_CAP) {
                 FURI_LOG_W(TAG, "rx buffer full, dropping");
                 g_ble.rx_len = 0;
@@ -39,7 +37,6 @@ static void fai_ble_try_parse(void) {
             return;
         }
 
-        // Compute consumed length from the frame kind.
         size_t consumed = 0;
         switch(frame.kind) {
         case FaiFrameNotify:
@@ -70,13 +67,7 @@ static void fai_ble_try_parse(void) {
     }
 }
 
-// BLE Serial RX callback. Signature follows Unleashed's
-// `SerialServiceEventCallback` convention: event + size + context.
-// Unleashed exposes the received bytes through a helper fetch call;
-// this wrapper copies them into our ring buffer and kicks the parser.
-static uint16_t fai_ble_rx_callback(
-    SerialServiceEvent event,
-    void* context) {
+static uint16_t fai_ble_rx_callback(SerialServiceEvent event, void* context) {
     UNUSED(context);
     if(event.event != SerialServiceEventTypeDataReceived) {
         return 0;
@@ -94,7 +85,7 @@ static uint16_t fai_ble_rx_callback(
     g_ble.rx_len += take;
 
     fai_ble_try_parse();
-    return take;
+    return (uint16_t)take;
 }
 
 void ble_serial_init(FuriMessageQueue* out_queue) {
@@ -104,23 +95,35 @@ void ble_serial_init(FuriMessageQueue* out_queue) {
     g_ble.out_queue = out_queue;
     g_ble.rx_len = 0;
 
-    // Switch BT stack to the Serial profile exposed by Unleashed.
-    furi_hal_bt_start_advertising();
-    furi_hal_bt_serial_set_event_callback(
-        FAI_RX_BUF_CAP, fai_ble_rx_callback, NULL);
+    g_ble.bt = furi_record_open(RECORD_BT);
+    // Switching profiles restarts the BT core — profile pointer is required
+    // for all subsequent tx/callback calls.
+    g_ble.profile = bt_profile_start(g_ble.bt, ble_profile_serial, NULL);
+    if(!g_ble.profile) {
+        FURI_LOG_E(TAG, "bt_profile_start failed");
+        furi_record_close(RECORD_BT);
+        g_ble.bt = NULL;
+        g_ble.out_queue = NULL;
+        return;
+    }
+
+    ble_profile_serial_set_event_callback(
+        g_ble.profile, FAI_RX_BUF_CAP, fai_ble_rx_callback, NULL);
 
     g_ble.initialized = true;
 }
 
 bool ble_serial_send(const uint8_t* buf, size_t len) {
     if(!g_ble.initialized || !buf || len == 0) return false;
-    return furi_hal_bt_serial_tx((uint8_t*)buf, len);
+    return ble_profile_serial_tx(g_ble.profile, (uint8_t*)buf, (uint16_t)len);
 }
 
 void ble_serial_deinit(void) {
     if(!g_ble.initialized) return;
-    furi_hal_bt_serial_set_event_callback(0, NULL, NULL);
-    furi_hal_bt_stop_advertising();
+    bt_profile_restore_default(g_ble.bt);
+    furi_record_close(RECORD_BT);
+    g_ble.bt = NULL;
+    g_ble.profile = NULL;
     g_ble.out_queue = NULL;
     g_ble.rx_len = 0;
     g_ble.initialized = false;
