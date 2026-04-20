@@ -1,11 +1,23 @@
 #include "render.h"
 
+#include <flipper_agent_indicator_icons.h>
 #include <gui/canvas.h>
 
 #include <string.h>
 
 #define FAI_TEXT_LINE_CHARS 21 // ~128px at Secondary font, 6px glyph
-#define FAI_TEXT_MAX_LINES  3
+#define FAI_TEXT_MAX_LINES  2  // two lines under the mascot + footer hint
+
+static const Icon* mascot_for_state(uint8_t state) {
+    switch(state) {
+    case FaiStateNeedsInput:
+        return &I_mascot_needs_input;
+    case FaiStateDone:
+        return &I_mascot_done;
+    default:
+        return &I_mascot_idle;
+    }
+}
 
 const char* render_agent_name(uint8_t agent) {
     switch(agent) {
@@ -90,24 +102,25 @@ static int fai_wrap(const char* text, char lines[FAI_TEXT_MAX_LINES][FAI_TEXT_LI
 void render_notification(Canvas* canvas, const FaiFrame* notify) {
     canvas_clear(canvas);
 
+    canvas_draw_icon(canvas, 0, 0, mascot_for_state(notify->state));
+
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 4, 12, render_agent_name(notify->agent));
+    canvas_draw_str(canvas, 36, 12, render_agent_name(notify->agent));
 
     canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str(canvas, 4, 26, render_state_name(notify->state));
+    canvas_draw_str(canvas, 36, 26, render_state_name(notify->state));
 
     if(notify->text_len > 0) {
         char lines[FAI_TEXT_MAX_LINES][FAI_TEXT_LINE_CHARS + 1];
         memset(lines, 0, sizeof(lines));
         const int used = fai_wrap(notify->text, lines);
-        int y = 40;
+        int y = 44;
         for(int i = 0; i < used; i++) {
-            canvas_draw_str(canvas, 4, y, lines[i]);
+            canvas_draw_str(canvas, 2, y, lines[i]);
             y += 10;
         }
     }
 
-    // Footer hint.
     canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str(canvas, 4, 62, "OK: dismiss");
+    canvas_draw_str(canvas, 82, 62, "OK dismiss");
 }

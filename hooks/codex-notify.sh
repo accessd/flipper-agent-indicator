@@ -21,4 +21,13 @@ case "$EVENT" in
         ;;
 esac
 
-flipper-indicator notify --agent codex --state "$STATE" >/dev/null 2>&1 || true
+TEXT=""
+if command -v tmux >/dev/null 2>&1 && [ -n "${TMUX-}" ]; then
+    TEXT="$(tmux display-message -p '#S:#W' 2>/dev/null || true)"
+fi
+
+if [ -n "$TEXT" ]; then
+    flipper-indicator notify --agent codex --state "$STATE" --text "$TEXT" >/dev/null 2>&1 || true
+else
+    flipper-indicator notify --agent codex --state "$STATE" >/dev/null 2>&1 || true
+fi
