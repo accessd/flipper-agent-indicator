@@ -9,6 +9,9 @@ running on a Flipper Zero over BLE Serial. The Flipper shows the agent label,
 blinks its LED, and vibrates. Press OK on the device to dismiss — the daemon
 clears both the Flipper screen and the tmux pane decoration.
 
+<img width="476" height="535" alt="flipper-agent" src="https://github.com/user-attachments/assets/e4347404-8686-4cb8-b76c-f879e956621e" />
+
+
 ## How it fits together
 
 ```
