@@ -52,10 +52,12 @@ void effects_apply(const FaiFrame* notify) {
 
     switch(notify->state) {
     case FaiStateNeedsInput:
+        notification_message(g_notifications, &sequence_display_backlight_on);
         notification_message(g_notifications, agent_blink(notify->agent));
         notification_message(g_notifications, &sequence_double_vibro);
         break;
     case FaiStateDone:
+        notification_message(g_notifications, &sequence_display_backlight_on);
         notification_message(g_notifications, agent_solid_done(notify->agent));
         notification_message(g_notifications, &sequence_single_vibro);
         break;

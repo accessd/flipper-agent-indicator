@@ -19,12 +19,28 @@ typedef struct {
     Bt* bt;
     FuriHalBleProfileBase* profile;
     FuriMessageQueue* out_queue;
+    FuriTimer* rpc_guard;
     uint8_t rx_buf[FAI_RX_BUF_CAP];
     size_t rx_len;
     bool initialized;
 } FaiBleSerial;
 
 static FaiBleSerial g_ble = {0};
+
+static uint16_t fai_ble_rx_callback(SerialServiceEvent event, void* context);
+
+// BtSrv re-registers its own event_callback on every connect (so bytes are
+// routed to the RPC dispatcher) AND sets rpc_active=true. We compete by
+// reinstalling our callback + flipping the flag periodically — whichever
+// arrives last on any given tick wins.
+static void fai_rpc_guard_tick(void* ctx) {
+    UNUSED(ctx);
+    if(g_ble.profile) {
+        ble_profile_serial_set_event_callback(
+            g_ble.profile, FAI_RX_BUF_CAP, fai_ble_rx_callback, NULL);
+        ble_profile_serial_set_rpc_active(g_ble.profile, false);
+    }
+}
 
 static void fai_ble_try_parse(void) {
     while(g_ble.rx_len > 0) {
@@ -67,8 +83,24 @@ static void fai_ble_try_parse(void) {
     }
 }
 
+// BtSrv re-enables RPC passthrough whenever a central connects. Override
+// it back on every connect so incoming bytes flow into our callback, not
+// the system RPC dispatcher.
+static void fai_bt_status_cb(BtStatus status, void* context) {
+    UNUSED(context);
+    if(status == BtStatusConnected && g_ble.profile) {
+        ble_profile_serial_set_event_callback(
+            g_ble.profile, FAI_RX_BUF_CAP, fai_ble_rx_callback, NULL);
+        ble_profile_serial_set_rpc_active(g_ble.profile, false);
+        FURI_LOG_I(TAG, "connected; callback re-attached");
+    } else if(status == BtStatusAdvertising) {
+        FURI_LOG_I(TAG, "advertising");
+    }
+}
+
 static uint16_t fai_ble_rx_callback(SerialServiceEvent event, void* context) {
     UNUSED(context);
+    FURI_LOG_I(TAG, "cb event=%d size=%u", (int)event.event, (unsigned)event.data.size);
     if(event.event != SerialServiceEventTypeDataReceived) {
         return 0;
     }
@@ -83,6 +115,7 @@ static uint16_t fai_ble_rx_callback(SerialServiceEvent event, void* context) {
     const size_t take = event.data.size < space ? event.data.size : space;
     memcpy(g_ble.rx_buf + g_ble.rx_len, event.data.buffer, take);
     g_ble.rx_len += take;
+    FURI_LOG_I(TAG, "rx took=%u total=%u", (unsigned)take, (unsigned)g_ble.rx_len);
 
     fai_ble_try_parse();
     return (uint16_t)take;
@@ -109,6 +142,13 @@ void ble_serial_init(FuriMessageQueue* out_queue) {
 
     ble_profile_serial_set_event_callback(
         g_ble.profile, FAI_RX_BUF_CAP, fai_ble_rx_callback, NULL);
+    ble_profile_serial_set_rpc_active(g_ble.profile, false);
+    bt_set_status_changed_callback(g_ble.bt, fai_bt_status_cb, NULL);
+
+    g_ble.rpc_guard = furi_timer_alloc(fai_rpc_guard_tick, FuriTimerTypePeriodic, NULL);
+    furi_timer_start(g_ble.rpc_guard, furi_ms_to_ticks(200));
+
+    FURI_LOG_I(TAG, "initialized, profile=%p", (void*)g_ble.profile);
 
     g_ble.initialized = true;
 }
@@ -120,6 +160,12 @@ bool ble_serial_send(const uint8_t* buf, size_t len) {
 
 void ble_serial_deinit(void) {
     if(!g_ble.initialized) return;
+    if(g_ble.rpc_guard) {
+        furi_timer_stop(g_ble.rpc_guard);
+        furi_timer_free(g_ble.rpc_guard);
+        g_ble.rpc_guard = NULL;
+    }
+    bt_set_status_changed_callback(g_ble.bt, NULL, NULL);
     bt_profile_restore_default(g_ble.bt);
     furi_record_close(RECORD_BT);
     g_ble.bt = NULL;

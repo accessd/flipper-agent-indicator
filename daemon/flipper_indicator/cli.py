@@ -68,12 +68,25 @@ def pair(timeout: float) -> None:
         click.echo("No devices found. Make sure Bluetooth is on and Flipper BLE is enabled.")
         sys.exit(1)
 
-    for i, (name, address) in enumerate(devices, 1):
-        click.echo(f"  [{i}] {name}  {address}")
+    # Prioritise entries advertising a Flipper-ish service UUID so the user can
+    # pick without guessing among <unknown>s on macOS (CoreBluetooth hides MACs).
+    flipper_markers = ("8fe5b3d5", "fff0", "flipper")
+
+    def score(entry: tuple[str, str, list[str]]) -> tuple[int, str]:
+        name, _address, uuids = entry
+        blob = " ".join(uuids + [name]).lower()
+        match = any(m in blob for m in flipper_markers)
+        return (0 if match else 1, name.lower())
+
+    devices.sort(key=score)
+
+    for i, (name, address, uuids) in enumerate(devices, 1):
+        uuid_s = ", ".join(uuids) if uuids else "(no services advertised)"
+        click.echo(f"  [{i}] {name}  {address}\n       {uuid_s}")
     raw = click.prompt("Pick a device", type=str)
     try:
         idx = int(raw) - 1
-        name, address = devices[idx]
+        name, address, _uuids = devices[idx]
     except (ValueError, IndexError):
         click.echo("Invalid selection.", err=True)
         sys.exit(1)

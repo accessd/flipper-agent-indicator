@@ -1,15 +1,4 @@
-"""Async BLE client for Flipper Zero BLE Serial.
-
-The Flipper exposes a Nordic UART Service (NUS)-compatible BLE Serial profile.
-Write frames to the TX characteristic; subscribe to notifications on the RX
-characteristic. UUIDs below are the common Nordic UART UUIDs that Flipper
-firmware uses; the firmware agent should confirm these against the running
-build.
-
-TODO: verify NUS_RX_UUID / NUS_TX_UUID match the custom `.fap` built by the
-firmware agent. If they diverge, the daemon config should grow a
-``rx_char_uuid`` / ``tx_char_uuid`` override.
-"""
+"""Async BLE client for Flipper Zero BLE Serial."""
 
 from __future__ import annotations
 
@@ -19,12 +8,10 @@ from typing import AsyncIterator, Awaitable, Callable, Optional, Protocol
 import structlog
 from bleak import BleakClient, BleakScanner
 
-# Nordic UART Service UUIDs. These match what Flipper BLE Serial typically
-# exposes; if the `.fap` uses a different UUID, the scanner fallback below
-# selects the first characteristic with write+notify properties on the device.
-NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-NUS_WRITE_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  # host -> flipper
-NUS_NOTIFY_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  # flipper -> host
+# Flipper Serial Service (FlipperDevices BLE profile).
+FLIPPER_SERIAL_SERVICE_UUID = "8fe5b3d5-2e7f-4a98-2a48-7acc60fe0000"
+FLIPPER_WRITE_UUID = "19ed82ae-ed21-4c9d-4145-228e62fe0000"   # host -> flipper (RX on fw side)
+FLIPPER_NOTIFY_UUID = "19ed82ae-ed21-4c9d-4145-228e63fe0000"  # flipper -> host (TX on fw side)
 
 BACKOFF_INITIAL = 1.0
 BACKOFF_MAX = 30.0
@@ -62,8 +49,8 @@ class FlipperClient:
         *,
         scanner: ScannerFn = _default_scanner,
         client_factory: ClientFactory = _default_client_factory,
-        write_uuid: str = NUS_WRITE_UUID,
-        notify_uuid: str = NUS_NOTIFY_UUID,
+        write_uuid: str = FLIPPER_WRITE_UUID,
+        notify_uuid: str = FLIPPER_NOTIFY_UUID,
     ) -> None:
         self._mac = mac
         self._outgoing = outgoing
@@ -115,14 +102,23 @@ class FlipperClient:
             frame = await self._outgoing.get()
             if not client.is_connected:
                 raise RuntimeError("link dropped")
-            await client.write_gatt_char(self._write_uuid, frame, response=False)
-            self._log.debug("ble.tx", bytes=len(frame))
+            try:
+                await client.write_gatt_char(self._write_uuid, frame, response=True)
+                self._log.info("ble.tx", bytes=len(frame))
+            except Exception as exc:
+                self._log.error("ble.tx_failed", error=str(exc))
+                raise
 
 
-async def scan_devices(timeout: float = 8.0) -> list[tuple[str, str]]:
-    """Return a list of ``(name, address)`` tuples for nearby BLE devices."""
-    devices = await BleakScanner.discover(timeout=timeout)
-    return [(d.name or "<unknown>", d.address) for d in devices]
+async def scan_devices(timeout: float = 8.0) -> list[tuple[str, str, list[str]]]:
+    """Return a list of ``(name, address, service_uuids)`` tuples."""
+    found = await BleakScanner.discover(timeout=timeout, return_adv=True)
+    out: list[tuple[str, str, list[str]]] = []
+    for address, (device, adv) in found.items():
+        name = device.name or adv.local_name or "<unknown>"
+        uuids = list(adv.service_uuids or [])
+        out.append((name, address, uuids))
+    return out
 
 
 async def iter_queue(q: asyncio.Queue[bytes]) -> AsyncIterator[bytes]:

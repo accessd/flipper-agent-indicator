@@ -112,6 +112,12 @@ async def _forward_notifies(
 async def _handle_incoming(incoming: asyncio.Queue[bytes], bridge: TmuxBridge) -> None:
     while True:
         raw = await incoming.get()
+        # Flipper's Serial Service periodically notifies a 4-byte big-endian
+        # "free RX buffer size" flow-control message on the data characteristic.
+        # Drop it silently rather than spamming unknown-tag warnings.
+        if len(raw) == 4 and raw[0] == 0:
+            _log.debug("rx.flow_ctrl", free=int.from_bytes(raw, "big"))
+            continue
         try:
             frame = protocol.decode(raw)
         except ValueError as exc:
