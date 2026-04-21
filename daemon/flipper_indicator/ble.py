@@ -38,6 +38,10 @@ def _default_client_factory(device: object) -> BleakLike:
     return BleakClient(device)  # type: ignore[return-value, arg-type]
 
 
+CONNECT_TIMEOUT = 20.0
+SCAN_FALLBACK_TIMEOUT = 15.0
+
+
 class FlipperClient:
     """Keeps a BLE Serial session with Flipper; publishes RX frames to a queue."""
 
@@ -75,14 +79,22 @@ class FlipperClient:
             backoff = min(backoff * 2, BACKOFF_MAX)
 
     async def _session(self) -> None:
-        self._log.info("ble.scan", mac=self._mac)
-        device = await self._scanner(self._mac, 10.0)
-        if device is None:
-            raise RuntimeError(f"device {self._mac} not found")
-
-        client = self._client_factory(device)
+        # macOS caches bonded peripherals by UUID; skip the scanner and let
+        # CoreBluetooth look up the peripheral directly. After sleep/wake the
+        # device does not re-advertise, so scanning just spins.
         self._log.info("ble.connecting", mac=self._mac)
-        await client.connect()
+        client = self._client_factory(self._mac)
+        try:
+            await client.connect(timeout=CONNECT_TIMEOUT)
+        except Exception:
+            # Cache may be cold (first run after daemon reinstall, different
+            # host, etc.). Fall back to an active scan once.
+            self._log.info("ble.scan", mac=self._mac)
+            device = await self._scanner(self._mac, SCAN_FALLBACK_TIMEOUT)
+            if device is None:
+                raise RuntimeError(f"device {self._mac} not found")
+            client = self._client_factory(device)
+            await client.connect(timeout=CONNECT_TIMEOUT)
         self._log.info("ble.connected", mac=self._mac)
         try:
             def on_notify(_sender: object, data: bytearray) -> None:
