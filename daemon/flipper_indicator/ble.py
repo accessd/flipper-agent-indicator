@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import AsyncIterator, Awaitable, Callable, Optional, Protocol
 
 import structlog
@@ -15,6 +16,12 @@ FLIPPER_NOTIFY_UUID = "19ed82ae-ed21-4c9d-4145-228e63fe0000"  # flipper -> host 
 
 BACKOFF_INITIAL = 1.0
 BACKOFF_MAX = 30.0
+
+# After N consecutive session failures *following a successful connect*, exit
+# the process so launchd reinstantiates us with a clean CoreBluetooth stack.
+# Only kicks in post-success so a cold-start with Flipper out of range keeps
+# retrying forever instead of flapping.
+FAILURES_BEFORE_RESTART = 3
 
 
 class BleakLike(Protocol):
@@ -64,17 +71,34 @@ class FlipperClient:
         self._write_uuid = write_uuid
         self._notify_uuid = notify_uuid
         self._log = structlog.get_logger("ble")
+        self._had_success = False
 
     async def run_forever(self) -> None:
         backoff = BACKOFF_INITIAL
+        had_success = False
+        failures_since_success = 0
         while True:
             try:
                 await self._session()
                 backoff = BACKOFF_INITIAL
+                failures_since_success = 0
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self._log.warning("ble.session_ended", error=str(exc), retry_in=backoff)
+                if self._had_success:
+                    had_success = True
+                if had_success:
+                    failures_since_success += 1
+                    if failures_since_success >= FAILURES_BEFORE_RESTART:
+                        self._log.error(
+                            "ble.exit_for_relaunch",
+                            failures=failures_since_success,
+                            reason="let launchd rebuild CoreBluetooth state",
+                        )
+                        # Bypass asyncio cleanup — we want a hard exit so launchd
+                        # re-spawns us with a fresh process + BLE stack.
+                        os._exit(1)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, BACKOFF_MAX)
 
@@ -96,6 +120,7 @@ class FlipperClient:
             client = self._client_factory(device)
             await client.connect(timeout=CONNECT_TIMEOUT)
         self._log.info("ble.connected", mac=self._mac)
+        self._had_success = True
         try:
             def on_notify(_sender: object, data: bytearray) -> None:
                 self._incoming.put_nowait(bytes(data))
