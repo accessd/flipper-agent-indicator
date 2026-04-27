@@ -70,6 +70,7 @@ class FlipperClient:
         self._client_factory = client_factory
         self._write_uuid = write_uuid
         self._notify_uuid = notify_uuid
+        self._pending_frame: bytes | None = None
         self._log = structlog.get_logger("ble")
         self._had_success = False
 
@@ -136,15 +137,33 @@ class FlipperClient:
 
     async def _pump_outgoing(self, client: BleakLike) -> None:
         while True:
-            frame = await self._outgoing.get()
+            frame = await self._next_frame()
             if not client.is_connected:
+                self._pending_frame = frame
                 raise RuntimeError("link dropped")
             try:
                 await client.write_gatt_char(self._write_uuid, frame, response=True)
                 self._log.info("ble.tx", bytes=len(frame))
             except Exception as exc:
+                self._pending_frame = frame
                 self._log.error("ble.tx_failed", error=str(exc))
                 raise
+
+    async def _next_frame(self) -> bytes:
+        if self._pending_frame is None:
+            frame = await self._outgoing.get()
+        else:
+            frame = self._pending_frame
+            self._pending_frame = None
+
+        # Preserve latest-wins semantics across reconnects: a newer queued frame
+        # supersedes the retained frame that failed during the previous session.
+        while not self._outgoing.empty():
+            try:
+                frame = self._outgoing.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        return frame
 
 
 async def scan_devices(timeout: float = 8.0) -> list[tuple[str, str, list[str]]]:
